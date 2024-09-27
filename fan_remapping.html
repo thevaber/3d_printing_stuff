@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Printer fan remapping script generator</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #1a1a1a;
+            color: #e0e0e0;
+            text-align: center;
+            margin: 0;
+            padding: 0;
+        }
+
+        canvas {
+            border: none;
+            display: block;
+            margin: 0 auto;
+            background: transparent;
+        }
+
+        textarea {
+            width: 90%;
+            margin: 20px;
+            background-color: #2b2b2b;
+            color: #e0e0e0;
+            border: 1px solid #555;
+            border-radius: 5px;
+            padding: 10px;
+            resize: none;
+            font-family: monospace;
+        }
+
+        button {
+            background-color: #5c6bc0;
+            color: #ffffff;
+            border: none;
+            border-radius: 5px;
+            padding: 5px 20px;
+            cursor: pointer;
+            font-size: 16px;
+            height: 32px;
+            transition: background-color 0.3s;
+        }
+
+        button:hover {
+            background-color: #3949ab;
+        }
+
+        .tooltip {
+            position: absolute;
+            background-color: rgba(50, 50, 50, 0.9);
+            color: #fff;
+            padding: 5px;
+            border-radius: 5px;
+            pointer-events: none;
+            display: none;
+            z-index: 10;
+            text-align: left;
+        }
+
+        #main {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 0 10px;
+        }
+
+        #top {
+            display: flex;
+            justify-content: space-between;
+            height: 50px;
+            border-bottom: 1px solid #333;
+            margin: 0;
+            margin-bottom: 20px;
+            padding: 0 20px;
+            position: sticky;
+            top: 0;
+            background-color: #1a1a1a;
+        }
+
+        .top-controls {
+            display: flex;
+            justify-content: right;
+            gap: 10px;
+            align-self: center;
+        }
+
+        .top-heading {
+            font-family: monospace;
+            font-size: 1.5em;
+            font-weight: bold;
+            align-self: center;
+            color: #666;
+        }
+
+        .mapping-container {
+            display: flex;
+            width: 100%;
+        }
+
+        .mapping-container .controls {
+            flex: 1 1 auto;
+            width: 100%;
+            border-radius: 5px;
+            border: 1px solid #333;
+            height: 728px;
+            align-self: center;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .mapping-container .controls button {
+            width: 100%;
+        }
+
+        .mapping-container .controls .tool-select {
+            display: flex;
+            gap: 10px;
+        }
+
+        .mapping-container .controls .tool-select button {
+            background-color: #555;
+        }
+
+        .mapping-container .controls .tool-select .active {
+            background-color: #5c6bc0;
+        }
+
+        .mapping-container .controls .tool-select button:hover, .mapping-container .controls .tool-select .active:hover {
+            background-color: #3949ab;
+        }
+
+        .mapping-container .mapping {
+            flex: 3 1 auto;
+        }
+    </style>
+</head>
+<body>
+    <div id="top">
+        <div class="top-heading">Fan speed remapping script generator</div>
+        <div class="top-controls">
+            <button id="saveButton">Save script</button>
+            <button id="importButton">Import script</button>
+        </div>
+    </div>
+    <div id="main">
+        <div class="mapping-container">
+            <div class="mapping">
+                <canvas id="canvas"></canvas>
+            </div>
+            <div class="controls">
+                <div class="tool-select">
+                    <button class="active" id="selectToolPencilButton">Pencil tool</button>
+                    <button id="selectToolLineButton">Line tool</button>
+                </div>
+                <button id="resetButton">Reset to default</button>
+            </div>
+        </div>
+        <div class="tooltip" id="tooltip"></div>
+        <input type="file" id="fileInput" style="display:none;" accept=".py" />
+        <textarea id="output" rows="18" readonly></textarea>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const tooltip = document.getElementById('tooltip');
+
+        const xpad = 30;
+        const ypad = 30;
+        let bw, bh, cw, ch;
+
+        let to_values = Array.from({ length: 256 }, (_, i) => i);
+        let prev_values = null;
+
+        let editing = false;
+        let prev_mouse_pos = null;
+        let start_mouse_pos = null;
+        let hover_idx = -1;
+
+        let line_tool = false;
+
+        function windowResized() {
+            bw = Math.ceil(Math.max(1, window.innerWidth - 650)/256);
+            bh = 3;
+            cw = 256*bw
+            ch = 256*bh;
+            canvas.width = cw + xpad*2;
+            canvas.height = ch + ypad*2;
+            redraw();
+        }
+
+        function redraw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height)
+
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+            ctx.beginPath();
+            ctx.rect(xpad, ypad, cw, ch);
+            ctx.stroke();
+
+            for (let i = 0; i < 256; i++) {
+                const from_value = i;
+                const to_value = to_values[i];
+
+                let color = '#ffffff';
+                if (i !== hover_idx) {
+                    const f = 0.5 + 0.5*((from_value - to_value)/255);
+                    let r, g, b;
+
+                    if (f < 0.5) {
+                        r = 255;
+                        g = f*2*255;
+                        b = 0;
+                    } else {
+                        r = 255*(1 - f)*2;
+                        g = 255;
+                        b = (f - 0.5)*2*255;
+                    }
+
+                    if (from_value % 2 === 1) { r *= 0.9; g *= 0.9; b *= 0.9; }
+
+                    color = `rgb(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)})`;
+                }
+
+                ctx.fillStyle = color;
+                const h = bh*to_value;
+                ctx.fillRect(xpad + i*bw, ypad + ch - h, bw, h);
+            }
+        }
+
+        function getMousePos(e) {
+            const rect = canvas.getBoundingClientRect();
+            return {
+                x: e.clientX - rect.left,
+                y: e.clientY - rect.top
+            }
+        }
+
+        function mousedown(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            editing = true;
+            prev_mouse_pos = getMousePos(e);
+            start_mouse_pos = prev_mouse_pos;
+            prev_values = [...to_values];
+            mousemove(e);
+        }
+
+        function mouseup(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            editing = false;
+            tooltip.style.display = 'none';
+        }
+
+        function mousemove(e) {
+            e.preventDefault();
+            e.stopPropagation();
+
+            const mouse_pos = getMousePos(e);
+            hover_idx = Math.floor((mouse_pos.x - xpad)/bw);
+            if (hover_idx >= 0 && hover_idx < 256) {
+                tooltip.style.display = 'block';
+                tooltip.style.left = (e.clientX + 20) + 'px';
+                tooltip.style.top = e.clientY + 'px';
+                tooltip.innerHTML = `From: ${((hover_idx/255)*100).toFixed(1)}%<br>To: ${((to_values[hover_idx]/255)*100).toFixed(1)}%`;
+            } else {
+                tooltip.style.display = 'none';
+            }
+
+            if (editing) {
+                let start_pos = prev_mouse_pos;
+                if (line_tool) {
+                    start_pos = start_mouse_pos;
+                    to_values = [...prev_values];
+                }
+
+                const prev_idx = Math.floor((start_pos.x - xpad) / bw);
+                const prev_value = Math.min(Math.max(((ypad + ch - start_pos.y) / ch) * 255, 0), 255);
+                const cur_idx = Math.floor((mouse_pos.x - xpad) / bw);
+                const cur_value = Math.min(Math.max(((ypad + ch - mouse_pos.y) / ch) * 255, 0), 255);
+
+                let ia = prev_idx, ib = cur_idx;
+                let va = prev_value, vb = cur_value;
+                if (prev_idx > cur_idx) {
+                    ia = cur_idx;
+                    ib = prev_idx;
+                    va = cur_value;
+                    vb = prev_value;
+                }
+
+                for (let i = ia; i <= ib; i++) {
+                    if (i >= 0 && i < 256) {
+                        let f = (i - ia) / (ib - ia + 1)
+                        if (ia == ib) f = 1.0;
+                        to_values[i] = Math.ceil(vb * f + va * (1 - f));
+                    }
+                }
+
+                prev_mouse_pos = mouse_pos;
+                updateOutput();
+            }
+
+            redraw();
+        }
+
+        ///
+
+        function resetToDefault() {
+            to_values = Array.from({ length: 256 }, (_, i) => i);
+            redraw();
+            updateOutput();
+        }
+
+        function selectToolPencil() {
+            document.getElementById('selectToolPencilButton').classList.add("active");
+            document.getElementById('selectToolLineButton').classList.remove("active");
+            line_tool = false;
+        }
+
+        function selectToolLine() {
+            document.getElementById('selectToolPencilButton').classList.remove("active");
+            document.getElementById('selectToolLineButton').classList.add("active");
+            line_tool = true;
+        }
+
+        ///
+
+        function updateOutput() {
+            const lookup = to_values.map(to_value => to_value.toString()).join(', ');
+            document.getElementById('output').value =
+`import sys
+lookup = [${lookup}]
+with open(sys.argv[1], 'r') as file:
+    lines = file.readlines()
+with open(sys.argv[1], 'w') as file:
+    for line in lines:
+        if "M106 S" in line:
+            parts = line.split("S")
+            num = int(parts[1].strip())
+            if 0 <= num < len(lookup):
+                line = f"M106 S{lookup[num]}\\n"
+        file.write(line)`;
+        }
+
+        function saveScript() {
+            const output = document.getElementById('output').value;
+            const blob = new Blob([output], { type: 'text/plain' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = 'fan_mapping.py';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+
+        function importScript() {
+            const fileInput = document.getElementById('fileInput');
+            fileInput.click();
+        }
+
+        function loadFile(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const content = e.target.result;
+
+                const lookupMatch = content.match(/lookup\s*=\s*\[(.*?)\]/);
+                if (lookupMatch) {
+                    const new_to_values = lookupMatch[1].split(',').map(Number).filter(h => !isNaN(h));
+                    if (new_to_values.length === 256) {
+                        to_values = new_to_values;
+                        redraw();
+                        updateOutput();
+                        return;
+                    }
+                }
+                alert('Invalid script.');
+            };
+            reader.readAsText(file);
+        }
+
+        ///
+
+        document.getElementById('saveButton').addEventListener('click', saveScript);
+        document.getElementById('importButton').addEventListener('click', importScript);
+        document.getElementById('fileInput').addEventListener('change', loadFile);
+
+        document.getElementById('selectToolPencilButton').addEventListener('click', selectToolPencil);
+        document.getElementById('selectToolLineButton').addEventListener('click', selectToolLine);
+        document.getElementById('resetButton').addEventListener('click', resetToDefault);
+
+        canvas.addEventListener('mousedown', mousedown);
+        canvas.addEventListener('mouseup', mouseup);
+        canvas.addEventListener('mousemove', mousemove);
+        canvas.addEventListener('mouseleave', mouseup);
+        window.addEventListener('resize', windowResized);
+
+        windowResized();
+        updateOutput();
+    </script>
+</body>
+</html>
